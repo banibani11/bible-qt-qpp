@@ -3,15 +3,20 @@
 Streamlit으로 구현된 매일 성경 묵상 도우미
 """
 
-import streamlit as st
+import json
+import os
+import re
 import random
 import calendar
-import re
-from datetime import date
+from datetime import date, datetime
+
+import streamlit as st
 
 # ─────────────────────────────────────────────
-# 1. 성경책 약어 → 전체 이름 매핑
+# 상수
 # ─────────────────────────────────────────────
+QT_RECORDS_FILE = "qt_records.json"
+
 BOOK_NAMES = {
     "창": "창세기", "출": "출애굽기", "레": "레위기", "민": "민수기", "신": "신명기",
     "수": "여호수아", "삿": "사사기", "룻": "룻기", "삼상": "사무엘상", "삼하": "사무엘하",
@@ -32,13 +37,102 @@ BOOK_NAMES = {
 
 
 # ─────────────────────────────────────────────
+# 1. QT 기록 영구 저장/로드 (Notion 우선, 없으면 로컬 JSON)
+# ─────────────────────────────────────────────
+def get_notion_client():
+    try:
+        from notion_client import Client
+        token = st.secrets.get("NOTION_TOKEN", "")
+        if token:
+            return Client(auth=token)
+    except Exception:
+        pass
+    return None
+
+
+def load_qt_records() -> dict:
+    client = get_notion_client()
+    db_id  = st.secrets.get("NOTION_DATABASE_ID", "")
+
+    if client and db_id:
+        try:
+            records  = {}
+            response = client.databases.query(database_id=db_id)
+            for page in response.get("results", []):
+                title_list = page["properties"].get("Name", {}).get("title", [])
+                date_str   = title_list[0]["plain_text"] if title_list else ""
+                if not date_str:
+                    continue
+                blocks   = client.blocks.children.list(block_id=page["id"])
+                raw_json = ""
+                for block in blocks.get("results", []):
+                    if block["type"] == "paragraph":
+                        for rt in block["paragraph"]["rich_text"]:
+                            raw_json += rt["plain_text"]
+                if raw_json:
+                    try:
+                        records[date_str] = json.loads(raw_json)
+                    except Exception:
+                        pass
+            return records
+        except Exception as e:
+            st.warning(f"Notion 로드 실패, 로컬 파일 사용: {e}")
+
+    if os.path.exists(QT_RECORDS_FILE):
+        try:
+            with open(QT_RECORDS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_qt_records(records: dict):
+    client = get_notion_client()
+    db_id  = st.secrets.get("NOTION_DATABASE_ID", "")
+
+    if client and db_id:
+        try:
+            latest_date = max(records.keys())
+            record      = records[latest_date]
+            data_json   = json.dumps(record, ensure_ascii=False)
+            chunks      = [data_json[i:i+2000] for i in range(0, len(data_json), 2000)]
+            children    = [
+                {
+                    "object": "block", "type": "paragraph",
+                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": chunk}}]},
+                }
+                for chunk in chunks
+            ]
+            existing = client.databases.query(
+                database_id=db_id,
+                filter={"property": "Name", "title": {"equals": latest_date}},
+            )
+            if existing["results"]:
+                page_id    = existing["results"][0]["id"]
+                old_blocks = client.blocks.children.list(block_id=page_id)
+                for b in old_blocks.get("results", []):
+                    client.blocks.delete(block_id=b["id"])
+                client.blocks.children.append(block_id=page_id, children=children)
+            else:
+                client.pages.create(
+                    parent={"database_id": db_id},
+                    properties={"Name": {"title": [{"text": {"content": latest_date}}]}},
+                    children=children,
+                )
+            return
+        except Exception as e:
+            st.warning(f"Notion 저장 실패, 로컬 파일에 저장: {e}")
+
+    with open(QT_RECORDS_FILE, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+
+
+# ─────────────────────────────────────────────
 # 2. 성경 데이터 로드
 # ─────────────────────────────────────────────
 @st.cache_data
 def load_bible():
-    """
-    개역성경.txt(EUC-KR)를 읽어 {책약어: {장: {절: 본문}}} 딕셔너리 반환
-    """
     bible = {}
     try:
         with open("개역성경.txt", "rb") as f:
@@ -55,8 +149,8 @@ def load_bible():
         colon = line.find(":")
         if colon == -1:
             continue
-        ref_part = line[:colon]                    # 예: "창1"
-        rest     = line[colon + 1:]               # 예: "1 태초에..."
+        ref_part = line[:colon]
+        rest     = line[colon + 1:]
 
         m_verse = re.match(r"(\d+)\s*(.*)", rest)
         if not m_verse:
@@ -67,16 +161,16 @@ def load_bible():
         m_book = re.match(r"([가-힣]+)(\d+)", ref_part)
         if not m_book:
             continue
-        book_abbr  = m_book.group(1)
-        chap_num   = int(m_book.group(2))
+        book_abbr = m_book.group(1)
+        chap_num  = int(m_book.group(2))
 
         bible.setdefault(book_abbr, {}).setdefault(chap_num, {})[verse_num] = verse_text
 
     return bible
 
 
-def get_random_passage(bible):
-    """같은 장의 연속 3~5절을 랜덤 선택하여 반환"""
+def get_random_passage(bible, seed=None):
+    """같은 장의 연속 3~5절을 랜덤 선택. seed가 있으면 동일 결과 보장."""
     valid = [
         (book, chap)
         for book, chapters in bible.items()
@@ -86,10 +180,11 @@ def get_random_passage(bible):
     if not valid:
         return None
 
-    book_abbr, chap_num = random.choice(valid)
+    rng = random.Random(seed)
+    book_abbr, chap_num = rng.choice(valid)
     verse_nums = sorted(bible[book_abbr][chap_num].keys())
-    length     = random.randint(3, min(5, len(verse_nums)))
-    start_idx  = random.randint(0, len(verse_nums) - length)
+    length     = rng.randint(3, min(5, len(verse_nums)))
+    start_idx  = rng.randint(0, len(verse_nums) - length)
     selected   = verse_nums[start_idx: start_idx + length]
 
     return (
@@ -112,12 +207,12 @@ def get_default_questions():
     ]
 
 
-def generate_qt_questions(passage_text, reference):
-    """Gemini API로 질문 3개 생성, 실패 시 기본 질문 반환"""
+def generate_qt_questions(passage_text, reference, api_key=""):
     try:
         import google.generativeai as genai
 
-        api_key = st.secrets.get("GEMINI_API_KEY", "")
+        if not api_key:
+            api_key = st.secrets.get("GEMINI_API_KEY", "")
         if not api_key:
             raise ValueError("API 키 없음")
 
@@ -144,108 +239,133 @@ def generate_qt_questions(passage_text, reference):
                 questions.append(q)
         return questions[:3] if len(questions) >= 3 else get_default_questions()
 
-    except Exception:
+    except Exception as e:
+        st.warning(f"⚠️ AI 질문 생성 실패 (기본 질문으로 대체): `{e}`")
         return get_default_questions()
 
 
 # ─────────────────────────────────────────────
-# 4. 달력 완료 표시
+# 4. 달력 렌더링 (완료 날짜 클릭 가능)
 # ─────────────────────────────────────────────
-def mark_today_complete():
-    today_str = date.today().isoformat()
-    if today_str not in st.session_state.completed_dates:
-        st.session_state.completed_dates.append(today_str)
-
-
 def render_calendar():
-    today  = date.today()
+    today      = date.today()
     year, month = today.year, today.month
-    prefix = f"{year}-{month:02d}-"
+    prefix     = f"{year}-{month:02d}-"
 
-    completed_days = {
+    records         = st.session_state.qt_records
+    completed_days  = {
         int(d.split("-")[2])
-        for d in st.session_state.completed_dates
+        for d in records
         if d.startswith(prefix)
     }
 
     st.markdown(f"### 📅 {year}년 {month}월 묵상 달력")
 
-    # HTML 테이블로 달력 렌더링 (모바일/PC 모두 동일하게 표시)
-    html = """
-    <style>
-    .cal-table {
-        width: 100%;
-        border-collapse: collapse;
-        table-layout: fixed;
-    }
-    .cal-table th {
-        text-align: center;
-        font-weight: bold;
-        color: #8B6F47;
-        padding: 6px 2px;
-        font-size: 0.9rem;
-    }
-    .cal-table td {
-        text-align: center;
-        padding: 6px 2px;
-        font-size: 0.95rem;
-        color: #5D4037;
-    }
-    .cal-done {
-        background: #C8E6C9;
-        border-radius: 8px;
-        display: inline-block;
-        width: 32px;
-        height: 32px;
-        line-height: 32px;
-    }
-    .cal-today {
-        background: #FFF9C4;
-        border-radius: 8px;
-        border: 2px solid #F9A825;
-        display: inline-block;
-        width: 32px;
-        height: 32px;
-        line-height: 28px;
-        font-weight: bold;
-    }
-    .cal-day {
-        display: inline-block;
-        width: 32px;
-        height: 32px;
-        line-height: 32px;
-    }
-    </style>
-    <table class="cal-table">
-    <tr>
-        <th>월</th><th>화</th><th>수</th><th>목</th><th>금</th><th>토</th><th>일</th>
-    </tr>
-    """
+    # 요일 헤더
+    day_names = ["월", "화", "수", "목", "금", "토", "일"]
+    header_cols = st.columns(7)
+    for i, dn in enumerate(day_names):
+        header_cols[i].markdown(
+            f"<div style='text-align:center;font-weight:bold;color:#8B6F47;font-size:0.9rem'>{dn}</div>",
+            unsafe_allow_html=True,
+        )
 
+    # 날짜 행
     for week in calendar.monthcalendar(year, month):
-        html += "<tr>"
-        for day in week:
+        week_cols = st.columns(7)
+        for i, day in enumerate(week):
             if day == 0:
-                html += "<td></td>"
+                week_cols[i].write("")
             elif day in completed_days:
-                html += f"<td><span class='cal-done'>✅</span></td>"
+                date_str = f"{year}-{month:02d}-{day:02d}"
+                if week_cols[i].button(
+                    f"✅\n{day}",
+                    key=f"cal_{date_str}",
+                    use_container_width=True,
+                    help=f"{date_str} 묵상 기록 보기",
+                ):
+                    st.session_state.view_date = (
+                        None if st.session_state.get("view_date") == date_str else date_str
+                    )
+                    st.rerun()
             elif day == today.day:
-                html += f"<td><span class='cal-today'>{day}</span></td>"
+                week_cols[i].markdown(
+                    f"<div style='text-align:center;background:#FFF9C4;border:2px solid #F9A825;"
+                    f"border-radius:8px;padding:4px 0;font-weight:bold;color:#5D4037'>{day}</div>",
+                    unsafe_allow_html=True,
+                )
             else:
-                html += f"<td><span class='cal-day'>{day}</span></td>"
-        html += "</tr>"
-
-    html += "</table>"
-    st.markdown(html, unsafe_allow_html=True)
+                week_cols[i].markdown(
+                    f"<div style='text-align:center;color:#5D4037;padding:4px 0'>{day}</div>",
+                    unsafe_allow_html=True,
+                )
 
 
 # ─────────────────────────────────────────────
-# 5. 메인
+# 5. 저장된 QT 기록 표시
+# ─────────────────────────────────────────────
+def render_qt_record(date_str: str):
+    record = st.session_state.qt_records.get(date_str)
+    if not record:
+        st.info("해당 날짜의 기록이 없습니다.")
+        return
+
+    d = datetime.strptime(date_str, "%Y-%m-%d")
+    weekday_kr = ["월","화","수","목","금","토","일"][d.weekday()]
+    st.markdown(
+        f"<h4 style='color:#5D4037'>📖 {d.year}년 {d.month}월 {d.day}일 ({weekday_kr}) 묵상 기록</h4>",
+        unsafe_allow_html=True,
+    )
+
+    # 구절
+    st.markdown(
+        f"<div class='verse-card'>"
+        f"<div class='verse-ref'>📜 {record['passage_ref']}</div>"
+        f"{record['passage_html']}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # 묵상 질문
+    if record.get("questions"):
+        st.markdown("**💭 묵상 질문**")
+        for i, q in enumerate(record["questions"], 1):
+            st.markdown(
+                f"<div class='question-card'>❓ <b>질문 {i}.</b> {q}</div>",
+                unsafe_allow_html=True,
+            )
+
+    # 나의 묵상
+    if record.get("meditation"):
+        st.markdown("**✍️ 나의 묵상**")
+        st.markdown(
+            f"<div style='background:#FFF8E1;border-left:4px solid #FFB300;border-radius:8px;"
+            f"padding:1rem 1.2rem;color:#3E2723;white-space:pre-wrap'>{record['meditation']}</div>",
+            unsafe_allow_html=True,
+        )
+
+    # 감사기도
+    gratitudes = [g for g in record.get("gratitude", []) if g]
+    if gratitudes:
+        st.markdown("**🙏 감사기도**")
+        for emoji, g in zip(["🌱", "🌻", "✨"], gratitudes):
+            st.markdown(
+                f"<div style='background:#E8F5E9;border-radius:8px;padding:0.5rem 1rem;"
+                f"margin:0.3rem 0;color:#2E7D32'>{emoji} {g}</div>",
+                unsafe_allow_html=True,
+            )
+
+    if st.button("닫기", key=f"close_{date_str}"):
+        st.session_state.view_date = None
+        st.rerun()
+
+
+# ─────────────────────────────────────────────
+# 6. 메인
 # ─────────────────────────────────────────────
 def main():
     st.set_page_config(page_title="성경 QT 묵상", page_icon="✝️", layout="centered")
 
-    # ── 스타일 ──
     st.markdown("""
     <style>
     .stApp { background: linear-gradient(135deg, #FFF8F0 0%, #FFF3E0 100%); }
@@ -272,11 +392,17 @@ def main():
     # ── 세션 초기화 ──
     if "bible" not in st.session_state:
         st.session_state.bible = load_bible()
+    if "qt_records" not in st.session_state:
+        st.session_state.qt_records = load_qt_records()
     if "passage" not in st.session_state:
-        st.session_state.passage   = get_random_passage(st.session_state.bible)
-        st.session_state.questions = None
-    if "completed_dates" not in st.session_state:
-        st.session_state.completed_dates = []
+        today_seed = int(date.today().strftime("%Y%m%d"))
+        st.session_state.passage             = get_random_passage(st.session_state.bible, seed=today_seed)
+        st.session_state.questions           = None
+        st.session_state.extra_passage_count = 0
+    if "gemini_api_key" not in st.session_state:
+        st.session_state.gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
+    if "view_date" not in st.session_state:
+        st.session_state.view_date = None
 
     # ── 헤더 ──
     st.markdown("""
@@ -294,6 +420,29 @@ def main():
         unsafe_allow_html=True,
     )
 
+    # ── Gemini API 키 입력 ──
+    st.markdown("### 🔑 Gemini API 키 설정")
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        new_key = st.text_input(
+            "API 키",
+            value=st.session_state.gemini_api_key,
+            type="password",
+            placeholder="AIza... 형식의 Gemini API 키를 입력하세요",
+            label_visibility="collapsed",
+        )
+    with col2:
+        if st.button("저장", use_container_width=True, key="save_api_key"):
+            if new_key != st.session_state.gemini_api_key:
+                st.session_state.gemini_api_key = new_key
+                st.session_state.questions = None
+                st.rerun()
+    if st.session_state.gemini_api_key:
+        st.success("✅ API 키가 설정되어 있습니다. AI가 구절에 맞는 질문을 생성합니다.")
+    else:
+        st.warning("⚠️ API 키 없이는 기본 질문이 표시됩니다. [API 키 발급](https://aistudio.google.com/app/apikey)")
+    st.markdown("<hr class='divider'>", unsafe_allow_html=True)
+
     # ── 구절 표시 ──
     passage = st.session_state.passage
     if passage is None:
@@ -308,19 +457,25 @@ def main():
         else f"{book_full} {chap_num}:{start_v}-{end_v}"
     )
 
-    html = f"<div class='verse-card'><div class='verse-ref'>📜 {ref_str}</div>"
-    for v_num, v_text in verses:
-        html += f"<b>{v_num}절</b> {v_text}<br>"
-    html += "</div>"
+    # passage_html: 절별 텍스트 (저장용 + 화면 표시용 공용)
+    passage_html = "".join(f"<b>{v_num}절</b> {v_text}<br>" for v_num, v_text in verses)
+
+    html = f"<div class='verse-card'><div class='verse-ref'>📜 {ref_str}</div>{passage_html}</div>"
     st.markdown(html, unsafe_allow_html=True)
 
     # 다른 구절 버튼
-    _, c, _ = st.columns([1, 2, 1])
-    with c:
-        if st.button("🔄 다른 구절 받기", use_container_width=True):
-            st.session_state.passage   = get_random_passage(st.session_state.bible)
-            st.session_state.questions = None
-            st.rerun()
+    today_str    = today.isoformat()
+    already_done = today_str in st.session_state.qt_records
+
+    if not already_done:
+        _, c, _ = st.columns([1, 2, 1])
+        with c:
+            if st.button("🔄 다른 구절 받기", use_container_width=True):
+                st.session_state.extra_passage_count += 1
+                new_seed = int(date.today().strftime("%Y%m%d")) + st.session_state.extra_passage_count
+                st.session_state.passage   = get_random_passage(st.session_state.bible, seed=new_seed)
+                st.session_state.questions = None
+                st.rerun()
 
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
 
@@ -330,7 +485,7 @@ def main():
     if st.session_state.questions is None:
         with st.spinner("✨ 묵상 질문을 준비하고 있어요..."):
             plain_text = " ".join(v for _, v in verses)
-            st.session_state.questions = generate_qt_questions(plain_text, ref_str)
+            st.session_state.questions = generate_qt_questions(plain_text, ref_str, st.session_state.gemini_api_key)
 
     for i, q in enumerate(st.session_state.questions, 1):
         st.markdown(
@@ -340,17 +495,20 @@ def main():
 
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
 
-    # ── 나의 묵상 나누기 (단일 입력란 — 질문과 무관하게 딱 1칸) ──
+    # ── 나의 묵상 나누기 ──
     st.markdown("### ✍️ 나의 묵상 나누기")
     st.markdown(
         "<p style='color:#8D6E63;font-size:0.9rem'>말씀을 통해 받은 감동, 깨달음, 결단을 자유롭게 적어보세요.</p>",
         unsafe_allow_html=True,
     )
+    meditation_value = st.session_state.qt_records.get(today_str, {}).get("meditation", "")
     st.text_area(
         label="나의 묵상",
+        value=meditation_value if already_done else None,
         placeholder="여기에 묵상을 적어보세요.",
         height=250,
         key="my_meditation_single",
+        disabled=already_done,
     )
 
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
@@ -361,16 +519,20 @@ def main():
         "<p style='color:#8D6E63;font-size:0.9rem'>오늘 감사한 것 3가지를 하나님께 고백해보세요.</p>",
         unsafe_allow_html=True,
     )
-    st.text_input("첫 번째 감사 🌱", placeholder="오늘 하나님께 감사한 것을 적어보세요...")
-    st.text_input("두 번째 감사 🌻", placeholder="또 다른 감사 제목이 있나요?")
-    st.text_input("세 번째 감사 ✨", placeholder="작은 것도 괜찮아요. 하나님은 모든 감사를 기뻐하세요.")
+    saved_gratitude = st.session_state.qt_records.get(today_str, {}).get("gratitude", ["", "", ""])
+    st.text_input("첫 번째 감사 🌱", placeholder="오늘 하나님께 감사한 것을 적어보세요...",
+                  key="gratitude_1", value=saved_gratitude[0] if already_done else None,
+                  disabled=already_done)
+    st.text_input("두 번째 감사 🌻", placeholder="또 다른 감사 제목이 있나요?",
+                  key="gratitude_2", value=saved_gratitude[1] if already_done else None,
+                  disabled=already_done)
+    st.text_input("세 번째 감사 ✨", placeholder="작은 것도 괜찮아요. 하나님은 모든 감사를 기뻐하세요.",
+                  key="gratitude_3", value=saved_gratitude[2] if already_done else None,
+                  disabled=already_done)
 
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
 
     # ── 완료 버튼 ──
-    today_str    = today.isoformat()
-    already_done = today_str in st.session_state.completed_dates
-
     if already_done:
         st.markdown(
             "<div class='done-badge'>🎉 오늘의 QT를 완료했어요! 하나님과 함께한 아름다운 하루를 보내세요.</div>",
@@ -380,7 +542,21 @@ def main():
         _, c, _ = st.columns([1, 2, 1])
         with c:
             if st.button("✅ 오늘의 QT 완료!", use_container_width=True, type="primary"):
-                mark_today_complete()
+                # 현재 입력값 수집
+                record = {
+                    "passage_ref":  ref_str,
+                    "passage_html": passage_html,
+                    "questions":    st.session_state.questions or [],
+                    "meditation":   st.session_state.get("my_meditation_single", ""),
+                    "gratitude": [
+                        st.session_state.get("gratitude_1", ""),
+                        st.session_state.get("gratitude_2", ""),
+                        st.session_state.get("gratitude_3", ""),
+                    ],
+                    "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                }
+                st.session_state.qt_records[today_str] = record
+                save_qt_records(st.session_state.qt_records)
                 st.balloons()
                 st.success("🎉 오늘의 말씀 묵상을 완료했습니다! 하나님께서 기뻐하실 거예요.")
                 st.rerun()
@@ -390,6 +566,17 @@ def main():
     # ── 달력 ──
     with st.expander("📅 이번 달 묵상 달력 보기", expanded=already_done):
         render_calendar()
+        if st.session_state.qt_records:
+            st.markdown(
+                "<p style='color:#8D6E63;font-size:0.85rem;margin-top:0.5rem'>"
+                "✅ 표시된 날짜를 클릭하면 그날의 묵상 기록을 볼 수 있어요.</p>",
+                unsafe_allow_html=True,
+            )
+
+    # ── 선택된 날짜의 QT 기록 ──
+    if st.session_state.view_date:
+        st.markdown("<hr class='divider'>", unsafe_allow_html=True)
+        render_qt_record(st.session_state.view_date)
 
     # ── 푸터 ──
     st.markdown("""
