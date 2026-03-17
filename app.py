@@ -346,26 +346,28 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # ── Gemini API 키 입력 (사이드바) ──
-    with st.sidebar:
-        st.markdown("### 🔑 Gemini API 설정")
+    # ── Gemini API 키 입력 ──
+    st.markdown("### 🔑 Gemini API 키 설정")
+    col1, col2 = st.columns([4, 1])
+    with col1:
         new_key = st.text_input(
             "API 키",
             value=st.session_state.gemini_api_key,
             type="password",
-            placeholder="AIza... 형식의 키 입력",
+            placeholder="AIza... 형식의 Gemini API 키를 입력하세요",
             label_visibility="collapsed",
         )
+    with col2:
         if st.button("저장", use_container_width=True, key="save_api_key"):
             if new_key != st.session_state.gemini_api_key:
                 st.session_state.gemini_api_key = new_key
                 st.session_state.questions = None
                 st.rerun()
-        if st.session_state.gemini_api_key:
-            st.success("✅ AI 질문 생성 활성화")
-        else:
-            st.warning("⚠️ 키 없이는 기본 질문 표시")
-            st.markdown("[API 키 발급 →](https://aistudio.google.com/app/apikey)", unsafe_allow_html=False)
+    if st.session_state.gemini_api_key:
+        st.success("✅ API 키가 설정되어 있습니다. AI가 구절에 맞는 질문을 생성합니다.")
+    else:
+        st.warning("⚠️ API 키 없이는 기본 질문이 표시됩니다. [API 키 발급](https://aistudio.google.com/app/apikey)")
+    st.markdown("<hr class='divider'>", unsafe_allow_html=True)
 
     # ── 구절 표시 ──
     passage = st.session_state.passage
