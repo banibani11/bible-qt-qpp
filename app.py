@@ -274,12 +274,12 @@ def generate_qt_questions(passage_text, reference, api_key=""):
 # 4. 달력 렌더링 (완료 날짜 클릭 가능)
 # ─────────────────────────────────────────────
 def render_calendar():
-    today      = date.today()
+    today       = date.today()
     year, month = today.year, today.month
-    prefix     = f"{year}-{month:02d}-"
+    prefix      = f"{year}-{month:02d}-"
 
-    records         = st.session_state.qt_records
-    completed_days  = {
+    records        = st.session_state.qt_records
+    completed_days = {
         int(d.split("-")[2])
         for d, v in records.items()
         if d.startswith(prefix) and v.get("is_completed", False)
@@ -287,44 +287,59 @@ def render_calendar():
 
     st.markdown(f"### 📅 {year}년 {month}월 묵상 달력")
 
-    # 요일 헤더
-    day_names = ["월", "화", "수", "목", "금", "토", "일"]
-    header_cols = st.columns(7)
-    for i, dn in enumerate(day_names):
-        header_cols[i].markdown(
-            f"<div style='text-align:center;font-weight:bold;color:#8B6F47;font-size:0.9rem'>{dn}</div>",
+    # HTML 테이블로 달력 렌더링 (모바일 호환)
+    html = """
+    <style>
+    .cal-table { width:100%; border-collapse:collapse; table-layout:fixed; }
+    .cal-table th {
+        text-align:center; font-weight:bold; color:#8B6F47;
+        padding:6px 2px; font-size:0.9rem;
+    }
+    .cal-table td { text-align:center; padding:6px 2px; font-size:0.95rem; }
+    .cal-done  { background:#C8E6C9; border-radius:8px; display:inline-block;
+                 width:32px; height:32px; line-height:32px; cursor:pointer; }
+    .cal-today { background:#FFF9C4; border:2px solid #F9A825; border-radius:8px;
+                 display:inline-block; width:32px; height:32px; line-height:28px;
+                 font-weight:bold; color:#5D4037; }
+    .cal-day   { display:inline-block; width:32px; height:32px;
+                 line-height:32px; color:#5D4037; }
+    </style>
+    <table class="cal-table">
+    <tr><th>월</th><th>화</th><th>수</th><th>목</th><th>금</th><th>토</th><th>일</th></tr>
+    """
+    for week in calendar.monthcalendar(year, month):
+        html += "<tr>"
+        for day in week:
+            if day == 0:
+                html += "<td></td>"
+            elif day in completed_days:
+                html += f"<td><span class='cal-done'>✅</span></td>"
+            elif day == today.day:
+                html += f"<td><span class='cal-today'>{day}</span></td>"
+            else:
+                html += f"<td><span class='cal-day'>{day}</span></td>"
+        html += "</tr>"
+    html += "</table>"
+    st.markdown(html, unsafe_allow_html=True)
+
+    # 완료 날짜 클릭 버튼 (달력 아래 별도 표시)
+    completed_dates = sorted(
+        [d for d, v in records.items() if d.startswith(prefix) and v.get("is_completed", False)],
+        reverse=True,
+    )
+    if completed_dates:
+        st.markdown(
+            "<p style='color:#8D6E63;font-size:0.85rem;margin-top:1rem'>📖 날짜를 눌러 묵상 기록 보기</p>",
             unsafe_allow_html=True,
         )
-
-    # 날짜 행
-    for week in calendar.monthcalendar(year, month):
-        week_cols = st.columns(7)
-        for i, day in enumerate(week):
-            if day == 0:
-                week_cols[i].write("")
-            elif day in completed_days:
-                date_str = f"{year}-{month:02d}-{day:02d}"
-                if week_cols[i].button(
-                    f"✅\n{day}",
-                    key=f"cal_{date_str}",
-                    use_container_width=True,
-                    help=f"{date_str} 묵상 기록 보기",
-                ):
-                    st.session_state.view_date = (
-                        None if st.session_state.get("view_date") == date_str else date_str
-                    )
-                    st.rerun()
-            elif day == today.day:
-                week_cols[i].markdown(
-                    f"<div style='text-align:center;background:#FFF9C4;border:2px solid #F9A825;"
-                    f"border-radius:8px;padding:4px 0;font-weight:bold;color:#5D4037'>{day}</div>",
-                    unsafe_allow_html=True,
+        cols = st.columns(len(completed_dates))
+        for i, d in enumerate(completed_dates):
+            day_num = int(d.split("-")[2])
+            if cols[i].button(f"✅ {day_num}일", key=f"cal_{d}", use_container_width=True):
+                st.session_state.view_date = (
+                    None if st.session_state.get("view_date") == d else d
                 )
-            else:
-                week_cols[i].markdown(
-                    f"<div style='text-align:center;color:#5D4037;padding:4px 0'>{day}</div>",
-                    unsafe_allow_html=True,
-                )
+                st.rerun()
 
 
 # ─────────────────────────────────────────────
