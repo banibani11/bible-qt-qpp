@@ -464,17 +464,14 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # 질문별 응답 입력란
-    responses = []
-    for i, q in enumerate(questions, 1):
-        resp = st.text_area(
-            label=f"질문 {i} 묵상",
-            placeholder=f"질문 {i}: {q[:40]}...\n\n여기에 묵상을 적어보세요.",
-            height=120,
-            key=f"response_{i}_{ref_str}",
-            label_visibility="collapsed",
-        )
-        responses.append(resp)
+    # 묵상 응답 입력란 (단일 칸, 글자수 제한 없음)
+    st.text_area(
+        label="묵상 나누기",
+        placeholder="말씀을 통해 받은 감동, 깨달음, 결단, 기도 제목 등을 자유롭게 적어보세요.",
+        height=200,
+        key=f"response_{ref_str}",
+        label_visibility="collapsed",
+    )
 
     st.markdown("<hr class='warm-divider'>", unsafe_allow_html=True)
 
