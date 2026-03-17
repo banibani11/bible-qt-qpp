@@ -281,8 +281,8 @@ def render_calendar():
     records         = st.session_state.qt_records
     completed_days  = {
         int(d.split("-")[2])
-        for d in records
-        if d.startswith(prefix)
+        for d, v in records.items()
+        if d.startswith(prefix) and v.get("is_completed", False)
     }
 
     st.markdown(f"### 📅 {year}년 {month}월 묵상 달력")
@@ -491,7 +491,8 @@ def main():
 
     # 다른 구절 버튼
     today_str    = today.isoformat()
-    already_done = today_str in st.session_state.qt_records
+    today_record = st.session_state.qt_records.get(today_str, {})
+    already_done = today_record.get("is_completed", False)
 
     if not already_done:
         _, c, _ = st.columns([1, 2, 1])
@@ -527,15 +528,30 @@ def main():
         "<p style='color:#8D6E63;font-size:0.9rem'>말씀을 통해 받은 감동, 깨달음, 결단을 자유롭게 적어보세요.</p>",
         unsafe_allow_html=True,
     )
-    meditation_value = st.session_state.qt_records.get(today_str, {}).get("meditation", "")
+    meditation_value = today_record.get("meditation", "")
     st.text_area(
         label="나의 묵상",
-        value=meditation_value if already_done else None,
+        value=meditation_value if (already_done or meditation_value) else None,
         placeholder="여기에 묵상을 적어보세요.",
         height=250,
         key="my_meditation_single",
         disabled=already_done,
     )
+    if not already_done:
+        _, c, _ = st.columns([1, 2, 1])
+        with c:
+            if st.button("💾 묵상 저장", use_container_width=True, key="save_meditation"):
+                draft = {
+                    **today_record,
+                    "passage_ref":  ref_str,
+                    "passage_html": passage_html,
+                    "questions":    st.session_state.questions or [],
+                    "meditation":   st.session_state.get("my_meditation_single", ""),
+                    "is_completed": False,
+                }
+                st.session_state.qt_records[today_str] = draft
+                save_qt_records(st.session_state.qt_records)
+                st.success("💾 묵상이 저장되었습니다!")
 
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
 
@@ -580,6 +596,7 @@ def main():
                         st.session_state.get("gratitude_3", ""),
                     ],
                     "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "is_completed": True,
                 }
                 st.session_state.qt_records[today_str] = record
                 save_qt_records(st.session_state.qt_records)
