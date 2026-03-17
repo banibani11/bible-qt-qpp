@@ -39,31 +39,45 @@ BOOK_NAMES = {
 # ─────────────────────────────────────────────
 # 1. QT 기록 영구 저장/로드 (Notion 우선, 없으면 로컬 JSON)
 # ─────────────────────────────────────────────
-def get_notion_client():
-    try:
-        from notion_client import Client
-        token = st.secrets.get("NOTION_TOKEN", "")
-        if token:
-            return Client(auth=token)
-    except Exception:
-        pass
-    return None
+import requests as _requests
+
+NOTION_API = "https://api.notion.com/v1"
+
+
+def _notion_headers():
+    token = st.secrets.get("NOTION_TOKEN", "")
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+
+
+def _notion_ok():
+    return bool(st.secrets.get("NOTION_TOKEN", "") and st.secrets.get("NOTION_DATABASE_ID", ""))
 
 
 def load_qt_records() -> dict:
-    client = get_notion_client()
-    db_id  = st.secrets.get("NOTION_DATABASE_ID", "")
-
-    if client and db_id:
+    if _notion_ok():
         try:
-            records  = {}
-            response = client.databases.query(database_id=db_id)
+            db_id    = st.secrets.get("NOTION_DATABASE_ID", "")
+            response = _requests.post(
+                f"{NOTION_API}/databases/{db_id}/query",
+                headers=_notion_headers(),
+                json={},
+            ).json()
+
+            records = {}
             for page in response.get("results", []):
                 title_list = page["properties"].get("Name", {}).get("title", [])
                 date_str   = title_list[0]["plain_text"] if title_list else ""
                 if not date_str:
                     continue
-                blocks   = client.blocks.children.list(block_id=page["id"])
+
+                blocks   = _requests.get(
+                    f"{NOTION_API}/blocks/{page['id']}/children",
+                    headers=_notion_headers(),
+                ).json()
                 raw_json = ""
                 for block in blocks.get("results", []):
                     if block["type"] == "paragraph":
@@ -88,37 +102,49 @@ def load_qt_records() -> dict:
 
 
 def save_qt_records(records: dict):
-    client = get_notion_client()
-    db_id  = st.secrets.get("NOTION_DATABASE_ID", "")
-
-    if client and db_id:
+    if _notion_ok():
         try:
+            db_id       = st.secrets.get("NOTION_DATABASE_ID", "")
             latest_date = max(records.keys())
-            record      = records[latest_date]
-            data_json   = json.dumps(record, ensure_ascii=False)
+            data_json   = json.dumps(records[latest_date], ensure_ascii=False)
             chunks      = [data_json[i:i+2000] for i in range(0, len(data_json), 2000)]
             children    = [
                 {
                     "object": "block", "type": "paragraph",
-                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": chunk}}]},
+                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": c}}]},
                 }
-                for chunk in chunks
+                for c in chunks
             ]
-            existing = client.databases.query(
-                database_id=db_id,
-                filter={"property": "Name", "title": {"equals": latest_date}},
-            )
-            if existing["results"]:
+
+            # 기존 페이지 조회
+            existing = _requests.post(
+                f"{NOTION_API}/databases/{db_id}/query",
+                headers=_notion_headers(),
+                json={"filter": {"property": "Name", "title": {"equals": latest_date}}},
+            ).json()
+
+            if existing.get("results"):
                 page_id    = existing["results"][0]["id"]
-                old_blocks = client.blocks.children.list(block_id=page_id)
+                old_blocks = _requests.get(
+                    f"{NOTION_API}/blocks/{page_id}/children",
+                    headers=_notion_headers(),
+                ).json()
                 for b in old_blocks.get("results", []):
-                    client.blocks.delete(block_id=b["id"])
-                client.blocks.children.append(block_id=page_id, children=children)
+                    _requests.delete(f"{NOTION_API}/blocks/{b['id']}", headers=_notion_headers())
+                _requests.patch(
+                    f"{NOTION_API}/blocks/{page_id}/children",
+                    headers=_notion_headers(),
+                    json={"children": children},
+                )
             else:
-                client.pages.create(
-                    parent={"database_id": db_id},
-                    properties={"Name": {"title": [{"text": {"content": latest_date}}]}},
-                    children=children,
+                _requests.post(
+                    f"{NOTION_API}/pages",
+                    headers=_notion_headers(),
+                    json={
+                        "parent": {"database_id": db_id},
+                        "properties": {"Name": {"title": [{"text": {"content": latest_date}}]}},
+                        "children": children,
+                    },
                 )
             return
         except Exception as e:
