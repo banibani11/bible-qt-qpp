@@ -112,12 +112,13 @@ def get_default_questions():
     ]
 
 
-def generate_qt_questions(passage_text, reference):
+def generate_qt_questions(passage_text, reference, api_key=""):
     """Gemini API로 질문 3개 생성, 실패 시 기본 질문 반환"""
     try:
         import google.generativeai as genai
 
-        api_key = st.secrets.get("GEMINI_API_KEY", "")
+        if not api_key:
+            api_key = st.secrets.get("GEMINI_API_KEY", "")
         if not api_key:
             raise ValueError("API 키 없음")
 
@@ -277,6 +278,8 @@ def main():
         st.session_state.questions = None
     if "completed_dates" not in st.session_state:
         st.session_state.completed_dates = []
+    if "gemini_api_key" not in st.session_state:
+        st.session_state.gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 
     # ── 헤더 ──
     st.markdown("""
@@ -293,6 +296,28 @@ def main():
         f"📖 {today.year}년 {today.month}월 {today.day}일 ({weekday_kr})</p>",
         unsafe_allow_html=True,
     )
+
+    # ── Gemini API 키 입력 ──
+    with st.expander("🔑 Gemini API 키 설정 (AI 묵상 질문 생성용)", expanded=not st.session_state.gemini_api_key):
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            new_key = st.text_input(
+                "API 키",
+                value=st.session_state.gemini_api_key,
+                type="password",
+                placeholder="AIza... 형식의 Gemini API 키를 입력하세요",
+                label_visibility="collapsed",
+            )
+        with col2:
+            if st.button("저장", use_container_width=True):
+                if new_key != st.session_state.gemini_api_key:
+                    st.session_state.gemini_api_key = new_key
+                    st.session_state.questions = None  # 질문 재생성
+                    st.rerun()
+        if st.session_state.gemini_api_key:
+            st.success("✅ API 키가 설정되어 있습니다. AI가 구절에 맞는 질문을 생성합니다.")
+        else:
+            st.warning("⚠️ API 키 없이는 기본 질문이 표시됩니다. [API 키 발급](https://aistudio.google.com/app/apikey)")
 
     # ── 구절 표시 ──
     passage = st.session_state.passage
@@ -330,7 +355,7 @@ def main():
     if st.session_state.questions is None:
         with st.spinner("✨ 묵상 질문을 준비하고 있어요..."):
             plain_text = " ".join(v for _, v in verses)
-            st.session_state.questions = generate_qt_questions(plain_text, ref_str)
+            st.session_state.questions = generate_qt_questions(plain_text, ref_str, st.session_state.gemini_api_key)
 
     for i, q in enumerate(st.session_state.questions, 1):
         st.markdown(
