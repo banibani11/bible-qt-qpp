@@ -465,11 +465,13 @@ def main():
     )
 
     # 묵상 응답 입력란 (단일 칸, 글자수 제한 없음)
+    # key를 안전한 형식으로 구성 (공백·콜론 제거)
+    safe_key = f"response_{book_abbr}{chap_num}_{start_v}_{end_v}"
     st.text_area(
         label="묵상 나누기",
         placeholder="말씀을 통해 받은 감동, 깨달음, 결단, 기도 제목 등을 자유롭게 적어보세요.",
         height=200,
-        key=f"response_{ref_str}",
+        key=safe_key,
         label_visibility="collapsed",
     )
 
