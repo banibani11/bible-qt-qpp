@@ -75,8 +75,8 @@ def load_bible():
     return bible
 
 
-def get_random_passage(bible):
-    """같은 장의 연속 3~5절을 랜덤 선택하여 반환"""
+def get_random_passage(bible, seed=None):
+    """같은 장의 연속 3~5절을 랜덤 선택하여 반환. seed가 있으면 동일 결과 보장."""
     valid = [
         (book, chap)
         for book, chapters in bible.items()
@@ -86,10 +86,11 @@ def get_random_passage(bible):
     if not valid:
         return None
 
-    book_abbr, chap_num = random.choice(valid)
+    rng = random.Random(seed)
+    book_abbr, chap_num = rng.choice(valid)
     verse_nums = sorted(bible[book_abbr][chap_num].keys())
-    length     = random.randint(3, min(5, len(verse_nums)))
-    start_idx  = random.randint(0, len(verse_nums) - length)
+    length     = rng.randint(3, min(5, len(verse_nums)))
+    start_idx  = rng.randint(0, len(verse_nums) - length)
     selected   = verse_nums[start_idx: start_idx + length]
 
     return (
@@ -275,8 +276,10 @@ def main():
     if "bible" not in st.session_state:
         st.session_state.bible = load_bible()
     if "passage" not in st.session_state:
-        st.session_state.passage   = get_random_passage(st.session_state.bible)
+        today_seed = int(date.today().strftime("%Y%m%d"))
+        st.session_state.passage   = get_random_passage(st.session_state.bible, seed=today_seed)
         st.session_state.questions = None
+        st.session_state.extra_passage_count = 0
     if "completed_dates" not in st.session_state:
         st.session_state.completed_dates = []
     if "gemini_api_key" not in st.session_state:
@@ -344,7 +347,9 @@ def main():
     _, c, _ = st.columns([1, 2, 1])
     with c:
         if st.button("🔄 다른 구절 받기", use_container_width=True):
-            st.session_state.passage   = get_random_passage(st.session_state.bible)
+            st.session_state.extra_passage_count += 1
+            today_seed = int(date.today().strftime("%Y%m%d")) + st.session_state.extra_passage_count
+            st.session_state.passage   = get_random_passage(st.session_state.bible, seed=today_seed)
             st.session_state.questions = None
             st.rerun()
 
