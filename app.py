@@ -346,7 +346,13 @@ def generate_qt_questions(passage_text, reference, api_key=""):
         return questions[:3] if len(questions) >= 3 else get_default_questions()
 
     except Exception as e:
-        st.warning(f"⚠️ AI 질문 생성 실패 (기본 질문으로 대체): `{e}`")
+        err = str(e)
+        if "429" in err or "quota" in err.lower() or "Quota" in err:
+            st.warning("⚠️ API 할당량이 초과되었습니다. [결제 계정을 연결](https://aistudio.google.com/app/apikey)하거나 잠시 후 다시 시도해주세요. 기본 질문으로 대체합니다.")
+        elif "API 키 없음" in err:
+            pass  # 키 없음은 사이드바에서 이미 안내
+        else:
+            st.warning(f"⚠️ AI 질문 생성 실패 (기본 질문으로 대체): `{err}`")
         return get_default_questions()
 
 
