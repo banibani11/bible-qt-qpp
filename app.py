@@ -340,17 +340,17 @@ def main():
 
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
 
-    # ── 나의 묵상 나누기 (단일 입력란) ──
+    # ── 나의 묵상 나누기 (단일 입력란 — 질문과 무관하게 딱 1칸) ──
     st.markdown("### ✍️ 나의 묵상 나누기")
     st.markdown(
         "<p style='color:#8D6E63;font-size:0.9rem'>말씀을 통해 받은 감동, 깨달음, 결단을 자유롭게 적어보세요.</p>",
         unsafe_allow_html=True,
     )
     st.text_area(
-        label="묵상",
+        label="나의 묵상",
         placeholder="여기에 묵상을 적어보세요.",
-        height=200,
-        label_visibility="collapsed",
+        height=250,
+        key="my_meditation_single",
     )
 
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
