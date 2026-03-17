@@ -170,29 +170,73 @@ def render_calendar():
 
     st.markdown(f"### 📅 {year}년 {month}월 묵상 달력")
 
-    # 요일 헤더
-    for col, name in zip(st.columns(7), ["월","화","수","목","금","토","일"]):
-        col.markdown(
-            f"<div style='text-align:center;font-weight:bold;color:#8B6F47'>{name}</div>",
-            unsafe_allow_html=True,
-        )
+    # HTML 테이블로 달력 렌더링 (모바일/PC 모두 동일하게 표시)
+    html = """
+    <style>
+    .cal-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+    }
+    .cal-table th {
+        text-align: center;
+        font-weight: bold;
+        color: #8B6F47;
+        padding: 6px 2px;
+        font-size: 0.9rem;
+    }
+    .cal-table td {
+        text-align: center;
+        padding: 6px 2px;
+        font-size: 0.95rem;
+        color: #5D4037;
+    }
+    .cal-done {
+        background: #C8E6C9;
+        border-radius: 8px;
+        display: inline-block;
+        width: 32px;
+        height: 32px;
+        line-height: 32px;
+    }
+    .cal-today {
+        background: #FFF9C4;
+        border-radius: 8px;
+        border: 2px solid #F9A825;
+        display: inline-block;
+        width: 32px;
+        height: 32px;
+        line-height: 28px;
+        font-weight: bold;
+    }
+    .cal-day {
+        display: inline-block;
+        width: 32px;
+        height: 32px;
+        line-height: 32px;
+    }
+    </style>
+    <table class="cal-table">
+    <tr>
+        <th>월</th><th>화</th><th>수</th><th>목</th><th>금</th><th>토</th><th>일</th>
+    </tr>
+    """
 
-    # 날짜 셀
     for week in calendar.monthcalendar(year, month):
-        for col, day in zip(st.columns(7), week):
+        html += "<tr>"
+        for day in week:
             if day == 0:
-                col.markdown(" ")
-                continue
-            if day in completed_days:
-                style = "background:#C8E6C9;border-radius:8px;text-align:center;padding:4px"
-                text  = "✅"
+                html += "<td></td>"
+            elif day in completed_days:
+                html += f"<td><span class='cal-done'>✅</span></td>"
             elif day == today.day:
-                style = "background:#FFF9C4;border-radius:8px;text-align:center;padding:4px;border:2px solid #F9A825"
-                text  = f"<b>{day}</b>"
+                html += f"<td><span class='cal-today'>{day}</span></td>"
             else:
-                style = "text-align:center;padding:4px"
-                text  = str(day)
-            col.markdown(f"<div style='{style}'>{text}</div>", unsafe_allow_html=True)
+                html += f"<td><span class='cal-day'>{day}</span></td>"
+        html += "</tr>"
+
+    html += "</table>"
+    st.markdown(html, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────
