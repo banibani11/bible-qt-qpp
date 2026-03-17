@@ -1,0 +1,31 @@
+# Streamlit secrets (API 키 등 민감 정보 - 절대 커밋하지 마세요!)
+.streamlit/secrets.toml
+
+# Python 캐시
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# 가상환경
+.venv/
+venv/
+env/
+.env
+
+# IDE 설정
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS 시스템 파일
+.DS_Store
+
+# 로그
+*.log
+
+# 빌드 아티팩트
+dist/
+build/
+*.egg-info/
