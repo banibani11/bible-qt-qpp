@@ -57,19 +57,82 @@ def _notion_ok():
     return bool(st.secrets.get("NOTION_TOKEN", "") and st.secrets.get("NOTION_DATABASE_ID", ""))
 
 
+def _get_title_prop(db_id: str) -> str:
+    """DB의 실제 제목 속성 이름 반환 (한국어 Notion은 '이름', 영어는 'Name')."""
+    try:
+        resp = _requests.get(
+            f"{NOTION_API}/databases/{db_id}",
+            headers=_notion_headers(),
+        ).json()
+        for name, prop in resp.get("properties", {}).items():
+            if prop.get("type") == "title":
+                return name
+    except Exception:
+        pass
+    return "Name"
+
+
+def _txt_block(text: str):
+    return {
+        "object": "block", "type": "paragraph",
+        "paragraph": {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]},
+    }
+
+
+def _h3_block(text: str):
+    return {
+        "object": "block", "type": "heading_3",
+        "heading_3": {"rich_text": [{"type": "text", "text": {"content": text}}]},
+    }
+
+
+def _build_page_blocks(record: dict) -> list:
+    """날짜 레코드를 읽기 좋은 Notion 블록으로 변환."""
+    blocks = []
+
+    meditation = record.get("meditation", "").strip()
+    if meditation:
+        blocks.append(_h3_block("✍️ 나의 묵상 나누기"))
+        blocks.append(_txt_block(meditation))
+
+    gratitude = record.get("gratitude", ["", "", ""])
+    if any(g.strip() for g in gratitude):
+        blocks.append(_h3_block("🙏 오늘의 감사기도"))
+        for i, g in enumerate(gratitude, 1):
+            if g.strip():
+                blocks.append(_txt_block(f"{i}. {g.strip()}"))
+
+    # 앱 재로딩용 JSON (숨김 코드블록)
+    data_json = json.dumps(record, ensure_ascii=False)
+    for chunk in [data_json[i:i+2000] for i in range(0, len(data_json), 2000)]:
+        blocks.append({
+            "object": "block", "type": "code",
+            "code": {
+                "language": "json",
+                "rich_text": [{"type": "text", "text": {"content": chunk}}],
+            },
+        })
+    return blocks
+
+
 def load_qt_records() -> dict:
     if _notion_ok():
         try:
-            db_id    = st.secrets.get("NOTION_DATABASE_ID", "")
-            response = _requests.post(
+            db_id     = st.secrets.get("NOTION_DATABASE_ID", "")
+            title_key = _get_title_prop(db_id)
+            response  = _requests.post(
                 f"{NOTION_API}/databases/{db_id}/query",
                 headers=_notion_headers(),
                 json={},
             ).json()
 
+            if "message" in response:
+                st.warning(f"Notion 로드 오류: {response['message']}")
+                raise Exception(response["message"])
+
             records = {}
             for page in response.get("results", []):
-                title_list = page["properties"].get("Name", {}).get("title", [])
+                title_list = page["properties"].get(title_key, {}).get("title", [])
                 date_str   = title_list[0]["plain_text"] if title_list else ""
                 if not date_str:
                     continue
@@ -80,7 +143,12 @@ def load_qt_records() -> dict:
                 ).json()
                 raw_json = ""
                 for block in blocks.get("results", []):
-                    if block["type"] == "paragraph":
+                    # 코드블록에 JSON 저장
+                    if block["type"] == "code":
+                        for rt in block["code"]["rich_text"]:
+                            raw_json += rt["plain_text"]
+                    # 구버전 호환: 단락에 JSON 저장된 경우
+                    elif block["type"] == "paragraph" and not raw_json:
                         for rt in block["paragraph"]["rich_text"]:
                             raw_json += rt["plain_text"]
                 if raw_json:
@@ -101,27 +169,32 @@ def load_qt_records() -> dict:
     return {}
 
 
-def save_qt_records(records: dict):
-    if _notion_ok():
-        try:
-            db_id       = st.secrets.get("NOTION_DATABASE_ID", "")
-            latest_date = max(records.keys())
-            data_json   = json.dumps(records[latest_date], ensure_ascii=False)
-            chunks      = [data_json[i:i+2000] for i in range(0, len(data_json), 2000)]
-            children    = [
-                {
-                    "object": "block", "type": "paragraph",
-                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": c}}]},
-                }
-                for c in chunks
-            ]
+def save_qt_records(records: dict, date_str: str | None = None):
+    """특정 날짜(date_str) 레코드를 Notion에 저장. None이면 가장 최근 날짜."""
+    if not records:
+        return
 
+    target_date = date_str or max(records.keys())
+    record      = records.get(target_date)
+    if not record:
+        return
+
+    if _notion_ok():
+        db_id     = st.secrets.get("NOTION_DATABASE_ID", "")
+        title_key = _get_title_prop(db_id)
+        children  = _build_page_blocks(record)
+
+        try:
             # 기존 페이지 조회
             existing = _requests.post(
                 f"{NOTION_API}/databases/{db_id}/query",
                 headers=_notion_headers(),
-                json={"filter": {"property": "Name", "title": {"equals": latest_date}}},
+                json={"filter": {"property": title_key, "title": {"equals": target_date}}},
             ).json()
+
+            if "message" in existing:
+                st.error(f"Notion 오류: {existing['message']}")
+                return
 
             if existing.get("results"):
                 page_id    = existing["results"][0]["id"]
@@ -131,25 +204,32 @@ def save_qt_records(records: dict):
                 ).json()
                 for b in old_blocks.get("results", []):
                     _requests.delete(f"{NOTION_API}/blocks/{b['id']}", headers=_notion_headers())
-                _requests.patch(
+                resp = _requests.patch(
                     f"{NOTION_API}/blocks/{page_id}/children",
                     headers=_notion_headers(),
                     json={"children": children},
-                )
+                ).json()
             else:
-                _requests.post(
+                resp = _requests.post(
                     f"{NOTION_API}/pages",
                     headers=_notion_headers(),
                     json={
                         "parent": {"database_id": db_id},
-                        "properties": {"Name": {"title": [{"text": {"content": latest_date}}]}},
+                        "properties": {
+                            title_key: {"title": [{"text": {"content": target_date}}]},
+                        },
                         "children": children,
                     },
-                )
-            return
-        except Exception as e:
-            st.warning(f"Notion 저장 실패, 로컬 파일에 저장: {e}")
+                ).json()
 
+            if "message" in resp:
+                st.error(f"Notion 저장 실패: {resp['message']}")
+            else:
+                return  # 성공
+        except Exception as e:
+            st.error(f"Notion 저장 오류: {e}")
+
+    # 로컬 파일 백업
     with open(QT_RECORDS_FILE, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2)
 
@@ -565,7 +645,7 @@ def main():
                     "is_completed": False,
                 }
                 st.session_state.qt_records[today_str] = draft
-                save_qt_records(st.session_state.qt_records)
+                save_qt_records(st.session_state.qt_records, today_str)
                 st.success("💾 묵상이 저장되었습니다!")
 
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
@@ -614,7 +694,7 @@ def main():
                     "is_completed": True,
                 }
                 st.session_state.qt_records[today_str] = record
-                save_qt_records(st.session_state.qt_records)
+                save_qt_records(st.session_state.qt_records, today_str)
                 st.balloons()
                 st.success("🎉 오늘의 말씀 묵상을 완료했습니다! 하나님께서 기뻐하실 거예요.")
                 st.rerun()
