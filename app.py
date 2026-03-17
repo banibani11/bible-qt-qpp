@@ -145,7 +145,8 @@ def generate_qt_questions(passage_text, reference, api_key=""):
                 questions.append(q)
         return questions[:3] if len(questions) >= 3 else get_default_questions()
 
-    except Exception:
+    except Exception as e:
+        st.warning(f"⚠️ AI 질문 생성 실패 (기본 질문으로 대체): `{e}`")
         return get_default_questions()
 
 
